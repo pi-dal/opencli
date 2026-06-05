@@ -6,6 +6,8 @@
  */
 
 import * as fs from 'node:fs';
+import * as path from 'node:path';
+import * as os from 'node:os';
 import {
   BUILTIN_COMMANDS,
   bashCompletionScript,
@@ -102,5 +104,64 @@ function loadManifestEntries(manifestPaths: string[]): ManifestCompletionEntry[]
       found = true;
     } catch { /* skip missing/unreadable */ }
   }
+
+  // Scan plugins directory for commands to add to completion entries
+  const pluginEntries = loadPluginEntries();
+  if (pluginEntries.length > 0) {
+    entries.push(...pluginEntries);
+    found = true;
+  }
+
   return found ? entries : null;
+}
+
+function loadPluginEntries(): ManifestCompletionEntry[] {
+  const entries: ManifestCompletionEntry[] = [];
+  const pluginsDir = path.join(os.homedir(), '.opencli', 'plugins');
+  try {
+    if (!fs.existsSync(pluginsDir)) return entries;
+    const pluginDirs = fs.readdirSync(pluginsDir, { withFileTypes: true });
+    for (const entry of pluginDirs) {
+      const pluginDir = path.join(pluginsDir, entry.name);
+      let isDir = entry.isDirectory();
+      if (!isDir && entry.isSymbolicLink()) {
+        try {
+          const stat = fs.statSync(pluginDir);
+          isDir = stat.isDirectory();
+        } catch { /* broken symlink */ }
+      }
+      if (!isDir) continue;
+
+      let site = entry.name;
+      try {
+        const manifestPath = path.join(pluginDir, 'opencli-plugin.json');
+        if (fs.existsSync(manifestPath)) {
+          const raw = fs.readFileSync(manifestPath, 'utf-8');
+          const manifest = JSON.parse(raw);
+          if (manifest && typeof manifest === 'object' && typeof manifest.name === 'string' && manifest.name.trim() !== '') {
+            site = manifest.name.trim();
+          }
+        }
+      } catch { /* skip manifest parsing errors, fallback to entry.name */ }
+
+      try {
+        const files = fs.readdirSync(pluginDir);
+        const names = new Set(
+          files
+            .filter(f =>
+              (f.endsWith('.ts') && !f.endsWith('.d.ts') && !f.endsWith('.test.ts')) ||
+              (f.endsWith('.js') && !f.endsWith('.d.js'))
+            )
+            .map(f => path.basename(f, path.extname(f)))
+        );
+        for (let name of names) {
+          if (name.startsWith(`${site}-`)) {
+            name = name.slice(site.length + 1);
+          }
+          entries.push({ site, name });
+        }
+      } catch { /* skip individual plugin directory read errors */ }
+    }
+  } catch { /* skip plugins dir read errors */ }
+  return entries;
 }
